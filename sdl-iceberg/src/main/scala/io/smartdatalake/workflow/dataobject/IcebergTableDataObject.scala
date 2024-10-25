@@ -254,7 +254,6 @@ case class IcebergTableDataObject(override val id: DataObjectId,
   private[smartdatalake] def convertPathToIceberg(implicit context: ActionPipelineContext): Unit = {
     // get schema using Spark. Note that this only work for parquet files.
     val sparkSchema = context.sparkSession.read.parquet(hadoopPath.toString).schema
-    val schema = SparkSchemaUtil.convert(sparkSchema)
     // move parquet files and partitions from table root folder to data subfolder (Iceberg standard)
     val filesToMove = filesystem.listStatus(hadoopPath)
       .filter(f => (f.isFile && f.getPath.getName.matches(filetypePattern)) || (f.isDirectory && f.getPath.getName.contains("=")))
@@ -267,10 +266,7 @@ case class IcebergTableDataObject(override val id: DataObjectId,
     }
     // create table
     logger.info(s"($id) convertPathToIceberg: creating iceberg table")
-    val partitionSpec = partitions.foldLeft(PartitionSpec.builderFor(schema)){
-      case (partitionSpec, colName) => partitionSpec.identity(colName)
-    }.build
-    getIcebergCatalog.createTable(getTableIdentifier, schema, partitionSpec, hadoopPath.toString, options.asJava)
+    createIcebergTable(sparkSchema)
     // add files
     logger.info(s"($id) convertPathToIceberg: add_files")
     val parallelismStr = connection.flatMap(_.addFilesParallelism.map(", parallelism => " + _)).getOrElse("")
@@ -278,6 +274,14 @@ case class IcebergTableDataObject(override val id: DataObjectId,
     // cleanup potential SDLB .schema directory
     HdfsUtil.deletePath(new Path(hadoopPath, ".schema"), doWarn = false)(filesystem)
     logger.info(s"($id) convertPathToIceberg: succeeded")
+  }
+
+  private def createIcebergTable(sparkSchema: StructType)(implicit context: ActionPipelineContext) = {
+    val schema = SparkSchemaUtil.convert(sparkSchema)
+    val partitionSpec = partitions.foldLeft(PartitionSpec.builderFor(schema)) {
+      case (partitionSpec, colName) => partitionSpec.identity(colName)
+    }.build
+    getIcebergCatalog.createTable(getTableIdentifier, schema, partitionSpec, hadoopPath.toString, options.asJava)
   }
 
   override def getSparkDataFrame(partitionValues: Seq[PartitionValues] = Seq())(implicit context: ActionPipelineContext): DataFrame = {

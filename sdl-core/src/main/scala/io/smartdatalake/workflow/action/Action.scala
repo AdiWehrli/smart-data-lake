@@ -156,7 +156,7 @@ trait Action extends SdlConfigObject with ParsableFromConfig[Action] with DAGNod
    */
   def prepare(implicit context: ActionPipelineContext): Unit = {
     inputs.foreach(_.prepare)
-    outputs.foreach(_.prepare)
+    outputs.foreach(_.prepare) // this also includes recursiveInputs
     executionMode.foreach(_.prepare(id))
 
     // Make sure that data object names are still unique when replacing special characters with underscore
@@ -230,7 +230,7 @@ trait Action extends SdlConfigObject with ParsableFromConfig[Action] with DAGNod
     // init spark jobGroupId to identify metrics
     setSparkJobMetadata() // TODO: this triggers creating spark session
     // otherwise continue processing
-    inputs.foreach( input => input.preRead(findSubFeedPartitionValues(input.id, subFeeds)))
+    (inputs ++ recursiveInputs).foreach(input => input.preRead(findSubFeedPartitionValues(input.id, subFeeds)))
     outputs.foreach(_.preWrite) // Note: transformed subFeeds don't exist yet, that's why no partition values can be passed as parameters.
   }
 
@@ -253,7 +253,7 @@ trait Action extends SdlConfigObject with ParsableFromConfig[Action] with DAGNod
     // evaluate metrics fail condition if defined
     metricsFailCondition.foreach( c => evaluateMetricsFailCondition(c, outputSubFeeds))
     // process postRead/Write hooks
-    inputs.foreach( input => input.postRead(findSubFeedPartitionValues(input.id, inputSubFeeds)))
+    (inputs ++ recursiveInputs).foreach(input => input.postRead(findSubFeedPartitionValues(input.id, inputSubFeeds)))
     outputs.foreach( output => output.postWrite(findSubFeedPartitionValues(output.id, outputSubFeeds)))
   }
 
@@ -385,7 +385,7 @@ trait Action extends SdlConfigObject with ParsableFromConfig[Action] with DAGNod
    * @param executionId ExecutionId to get runtime information for. If empty runtime information for last ExecutionId are returned.
    */
   def getRuntimeInfo(executionId: Option[ExecutionId] = None) : Option[RuntimeInfo] = {
-    runtimeData.getRuntimeInfo(inputs.map(_.id), outputs.map(_.id), getDataObjectsState, executionId)
+    runtimeData.getRuntimeInfo((inputs ++ recursiveInputs).map(_.id), outputs.map(_.id), getDataObjectsState, executionId)
   }
 
   /**
