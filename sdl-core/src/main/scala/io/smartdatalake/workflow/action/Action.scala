@@ -319,7 +319,9 @@ trait Action extends SdlConfigObject with ParsableFromConfig[Action] with DAGNod
   /**
    * Helper to find partition values for a specific DataObject in list of subFeeds
    */
-  private def findSubFeedPartitionValues(dataObjectId: DataObjectId, subFeeds: Seq[SubFeed]): Seq[PartitionValues] = subFeeds.find(_.dataObjectId == dataObjectId).map(_.partitionValues).get
+  private def findSubFeedPartitionValues(dataObjectId: DataObjectId, subFeeds: Seq[SubFeed]): Seq[PartitionValues] = {
+    subFeeds.find(_.dataObjectId == dataObjectId).map(_.partitionValues).getOrElse(Seq())
+  }
 
   /**
    * Handle class cast exception when getting objects from instance registry
