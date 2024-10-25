@@ -252,25 +252,27 @@ case class IcebergTableDataObject(override val id: DataObjectId,
    * converts an existing path with parquet files to an iceberg table
    */
   private[smartdatalake] def convertPathToIceberg(implicit context: ActionPipelineContext): Unit = {
-    // get schema using Spark. Note that this only work for parquet files.
-    val sparkSchema = context.sparkSession.read.parquet(hadoopPath.toString).schema
-    // move parquet files and partitions from table root folder to data subfolder (Iceberg standard)
-    val filesToMove = filesystem.listStatus(hadoopPath)
-      .filter(f => (f.isFile && f.getPath.getName.matches(filetypePattern)) || (f.isDirectory && f.getPath.getName.contains("=")))
-    logger.info(s"($id) convertPathToIceberg: moving ${filesToMove.length} files to ./data subdirectory")
     val dataPath = new Path(hadoopPath, "data")
-    filesystem.mkdirs(dataPath)
-    filesToMove.foreach { f =>
-      val newPath = new Path(dataPath, f.getPath.getName)
-      if (!filesystem.rename(f.getPath, newPath)) throw new IllegalStateException(s"($id) Failed to rename ${f.getPath} -> $newPath")
+    if (!filesystem.exists(dataPath)) {
+      // move parquet files and partitions from table root folder to data subfolder (Iceberg standard)
+      val filesToMove = filesystem.listStatus(hadoopPath)
+        .filter(f => (f.isFile && f.getPath.getName.matches(filetypePattern)) || (f.isDirectory && f.getPath.getName.contains("=")))
+      logger.info(s"($id) convertPathToIceberg: moving ${filesToMove.length} files to ./data subdirectory")
+      filesystem.mkdirs(dataPath)
+      filesToMove.foreach { f =>
+        val newPath = new Path(dataPath, f.getPath.getName)
+        if (!filesystem.rename(f.getPath, newPath)) throw new IllegalStateException(s"($id) Failed to rename ${f.getPath} -> $newPath")
+      }
     }
     // create table
     logger.info(s"($id) convertPathToIceberg: creating iceberg table")
+    // get schema using Spark. Note that this only work for parquet files.
+    val sparkSchema = context.sparkSession.read.parquet(dataPath.toString).schema
     createIcebergTable(sparkSchema)
     // add files
     logger.info(s"($id) convertPathToIceberg: add_files")
     val parallelismStr = connection.flatMap(_.addFilesParallelism.map(", parallelism => " + _)).getOrElse("")
-    context.sparkSession.sql(s"CALL ${getIcebergCatalog.name}.system.add_files(table => '${getIdentifier.toString}', source_table => '`parquet`.`$hadoopPath/data`'$parallelismStr)")
+    context.sparkSession.sql(s"CALL ${getIcebergCatalog.name}.system.add_files(table => '${getIdentifier.toString}', source_table => '`parquet`.`$dataPath`'$parallelismStr)")
     // cleanup potential SDLB .schema directory
     HdfsUtil.deletePath(new Path(hadoopPath, ".schema"), doWarn = false)(filesystem)
     logger.info(s"($id) convertPathToIceberg: succeeded")
