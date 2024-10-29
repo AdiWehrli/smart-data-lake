@@ -256,7 +256,7 @@ abstract class DataFrameActionImpl extends ActionSubFeedsImpl[DataFrameSubFeed] 
       }
     } else preparedSubFeed
     // remove potential filter and partition values added by execution mode
-    if (ignoreFilters) preparedSubFeed = preparedSubFeed.breakLineage.clearFilter().clearPartitionValues().clearSkipped()
+    if (ignoreFilters) preparedSubFeed = preparedSubFeed.breakLineage.clearFilter().clearPartitionValues().clearSkipped().asInstanceOf[DataFrameSubFeed]
     // break lineage if requested or if it's a streaming DataFrame or if a filter expression is set
     if (breakDataFrameLineage || preparedSubFeed.isStreaming.contains(true) || preparedSubFeed.filter.isDefined) preparedSubFeed = preparedSubFeed.breakLineage
     // enrich with fresh DataFrame if needed
@@ -327,6 +327,12 @@ abstract class DataFrameActionImpl extends ActionSubFeedsImpl[DataFrameSubFeed] 
     }
   }
 
+  override protected def convertToOutputSubFeed(subFeed: DataFrameSubFeed): DataFrameSubFeed = {
+    subFeed.dataFrame.flatMap(df =>
+      saveModeOptions.map(options => subFeed.withDataFrame(Some(options.convertToTargetSchema(df))))
+    ).getOrElse(subFeed)
+  }
+
   override protected def writeSubFeed(subFeed: DataFrameSubFeed, isRecursive: Boolean)(implicit context: ActionPipelineContext): DataFrameSubFeed = {
     // write subfeed to output
     setSparkJobMetadata(Some(s"writing to ${subFeed.dataObjectId}"))
@@ -339,7 +345,7 @@ abstract class DataFrameActionImpl extends ActionSubFeedsImpl[DataFrameSubFeed] 
     outputSubFeed = output match {
       case evDataObject: DataObject with ExpectationValidation with CanCreateDataFrame =>
         // get metrics with scope Job from observations
-        val scopeJobExpectationMetrics = subFeed.observation.map(_.waitFor()).getOrElse(Map())
+        val scopeJobExpectationMetrics = subFeed.observation.map(_.waitForElseNoData()).getOrElse(Map())
         // get input metrics for this actions expectations with scope All (scope=Job is calculated with preprocessInputSubFeedCustomized, scope=JobPartition is not supported on input)
         // Note that scope All metrics are only calculated if this is the main output.
         val actionExpectationsInputMetrics = if (isMainOutput) calculateInputAggMetricsWithScopeAll(subFeed) else Map()

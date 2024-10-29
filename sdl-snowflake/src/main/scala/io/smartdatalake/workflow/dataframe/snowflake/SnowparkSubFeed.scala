@@ -56,14 +56,6 @@ case class SnowparkSubFeed(@transient override val dataFrame: Option[SnowparkDat
     this.copy(partitionValues = updatedPartitionValues)
   }
 
-  override def clearDAGStart(): SnowparkSubFeed = {
-    this.copy(isDAGStart = false)
-  }
-
-  override def clearSkipped(): SnowparkSubFeed = {
-    this.copy(isSkipped = false)
-  }
-
   override def toOutput(dataObjectId: DataObjectId): SnowparkSubFeed = {
     this.copy(dataFrame = None, filter = None, isDAGStart = false, isSkipped = false, isDummy = false, dataObjectId = dataObjectId, observation = None, metrics = None)
   }
@@ -140,11 +132,6 @@ case class SnowparkSubFeed(@transient override val dataFrame: Option[SnowparkDat
   override def movePartitionColumnsLast(partitions: Seq[String]): SnowparkSubFeed = {
     withDataFrame(dataFrame.map(x => x.movePartitionColsLast(partitions)))
   }
-
-  override def withMetrics(metrics: MetricsMap): SnowparkSubFeed = {
-    this.copy(metrics = Some(metrics))
-  }
-  def appendMetrics(metrics: MetricsMap): SnowparkSubFeed = withMetrics(this.metrics.getOrElse(Map()) ++ metrics)
 }
 
 object SnowparkSubFeed extends DataFrameSubFeedCompanion with SmartDataLakeLogger {

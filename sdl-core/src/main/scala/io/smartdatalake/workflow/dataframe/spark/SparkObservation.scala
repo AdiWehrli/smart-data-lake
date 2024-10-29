@@ -59,8 +59,8 @@ private[smartdatalake] class SparkObservation(name: String = UUID.randomUUID().t
    * @param timeoutSec max wait time in seconds. Throws NoMetricsReceivedException if metrics were not received in time.
    * @return the observed metrics as a `Map[String, Any]`
    */
-  @throws[InterruptedException]
-  def waitFor(timeoutSec: Int = 10): Map[String, _] = {
+  @throws[NoMetricsReceivedException]
+  def waitFor(timeoutSec: Int = 1): Map[String, _] = {
     synchronized {
       // we need to loop as wait might return without us calling notify
       // https://en.wikipedia.org/w/index.php?title=Spurious_wakeup&oldid=992601610

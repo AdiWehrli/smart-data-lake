@@ -48,8 +48,6 @@ trait DataFrameSubFeed extends SubFeed {
   override def breakLineage(implicit context: ActionPipelineContext): DataFrameSubFeed
   override def clearPartitionValues(breakLineageOnChange: Boolean = true)(implicit context: ActionPipelineContext): DataFrameSubFeed
   override def updatePartitionValues(partitions: Seq[String], breakLineageOnChange: Boolean = true, newPartitionValues: Option[Seq[PartitionValues]] = None)(implicit context: ActionPipelineContext): DataFrameSubFeed
-  override def clearDAGStart(): DataFrameSubFeed
-  override def clearSkipped(): DataFrameSubFeed
   def isStreaming: Option[Boolean]
   def withDataFrame(dataFrame: Option[GenericDataFrame]): DataFrameSubFeed
   def withObservation(observation: Option[DataFrameObservation]): DataFrameSubFeed

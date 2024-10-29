@@ -28,12 +28,12 @@ import io.smartdatalake.util.hdfs.HdfsUtil.RemoteIteratorWrapper
 import io.smartdatalake.util.hdfs.{HdfsUtil, PartitionValues}
 import io.smartdatalake.util.hive.HiveUtil
 import io.smartdatalake.util.misc._
-import io.smartdatalake.util.spark.{DataFrameUtil, SparkQueryUtil}
+import io.smartdatalake.util.spark.SparkQueryUtil
 import io.smartdatalake.workflow.action.ActionSubFeedsImpl.MetricsMap
 import io.smartdatalake.workflow.action.NoDataToProcessWarning
 import io.smartdatalake.workflow.connection.IcebergTableConnection
 import io.smartdatalake.workflow.dataframe.GenericSchema
-import io.smartdatalake.workflow.dataframe.spark.{SparkSchema, SparkSubFeed}
+import io.smartdatalake.workflow.dataframe.spark.{SparkDataFrame, SparkSchema, SparkSubFeed}
 import io.smartdatalake.workflow.dataobject.expectation.Expectation
 import io.smartdatalake.workflow.{ActionPipelineContext, ProcessingLogicException}
 import org.apache.hadoop.fs.Path
@@ -325,13 +325,16 @@ case class IcebergTableDataObject(override val id: DataObjectId,
   }
 
   override def initSparkDataFrame(df: DataFrame, partitionValues: Seq[PartitionValues], saveModeOptions: Option[SaveModeOptions] = None)(implicit context: ActionPipelineContext): Unit = {
-    validateSchemaMin(SparkSchema(df.schema), "write")
-    validateSchemaHasPartitionCols(df, "write")
-    validateSchemaHasPrimaryKeyCols(df, table.primaryKey.getOrElse(Seq()), "write")
+    val genericDf = SparkDataFrame(df)
+    val targetDf = saveModeOptions.map(_.convertToTargetSchema(genericDf)).getOrElse(genericDf).inner
+    val targetSchema = targetDf.schema
+
+    validateSchemaMin(SparkSchema(targetSchema), "write")
+    validateSchemaHasPartitionCols(targetDf, "write")
+    validateSchemaHasPrimaryKeyCols(targetDf, table.primaryKey.getOrElse(Seq()), "write")
     if (isTableExisting) {
-      val saveModeTargetDf = saveModeOptions.map(_.convertToTargetSchema(df)).getOrElse(df)
       val existingSchema = SparkSchema(getSparkDataFrame().schema)
-      if (!allowSchemaEvolution) validateSchema(SparkSchema(saveModeTargetDf.schema), existingSchema, "write")
+      if (!allowSchemaEvolution) validateSchema(SparkSchema(targetSchema), existingSchema, "write")
     }
   }
 
@@ -343,54 +346,50 @@ case class IcebergTableDataObject(override val id: DataObjectId,
     }
   }
 
-  override def writeSparkDataFrame(df: DataFrame, partitionValues: Seq[PartitionValues] = Seq(), isRecursiveInput: Boolean = false, saveModeOptions: Option[SaveModeOptions] = None)
-                             (implicit context: ActionPipelineContext): MetricsMap = {
-    validateSchemaMin(SparkSchema(df.schema), "write")
-    validateSchemaHasPartitionCols(df, "write")
-    validateSchemaHasPrimaryKeyCols(df, table.primaryKey.getOrElse(Seq()), "write")
-    writeDataFrame(df, createTableOnly = false, partitionValues, saveModeOptions)
-  }
-
   /**
    * Writes DataFrame to HDFS/Parquet and creates Iceberg table.
    */
-  def writeDataFrame(df: DataFrame, createTableOnly: Boolean, partitionValues: Seq[PartitionValues], saveModeOptions: Option[SaveModeOptions])
-                    (implicit context: ActionPipelineContext): MetricsMap = {
+  override def writeSparkDataFrame(df: DataFrame, partitionValues: Seq[PartitionValues] = Seq(), isRecursiveInput: Boolean = false, saveModeOptions: Option[SaveModeOptions] = None)
+                                  (implicit context: ActionPipelineContext): MetricsMap = {
     implicit val session: SparkSession = context.sparkSession
     implicit val helper: SparkSubFeed.type = SparkSubFeed
-    val dfPrepared = if (createTableOnly) {
-      // create empty df with existing df's schema
-      DataFrameUtil.getEmptyDataFrame(df.schema)
-    } else df
+
+    val genericDf = SparkDataFrame(df)
+    val targetDf = saveModeOptions.map(_.convertToTargetSchema(genericDf)).getOrElse(genericDf).inner
+    val targetSchema = targetDf.schema
+
+    validateSchemaMin(SparkSchema(targetSchema), "write")
+    validateSchemaHasPartitionCols(targetDf, "write")
+    validateSchemaHasPrimaryKeyCols(targetDf, table.primaryKey.getOrElse(Seq()), "write")
 
     val finalSaveMode = saveModeOptions.map(_.saveMode).getOrElse(saveMode)
-    val saveModeTargetDf = saveModeOptions.map(_.convertToTargetSchema(dfPrepared)).getOrElse(dfPrepared)
+
     // remember previous snapshot timestamp
     val previousSnapshotId: Option[Long] = if (isTableExisting) Option(getIcebergTable.currentSnapshot()).map(_.snapshotId()) else None
     // V1 writer is needed to create external table
-    var dfWriter = saveModeTargetDf.write
+    var dfWriter = targetDf.write
       .format("iceberg")
       .options(options)
     if (isPathBasedCatalog(getIcebergCatalog)) dfWriter = dfWriter.option("location", hadoopPath.toString)
     else dfWriter = dfWriter.option("path", hadoopPath.toString)
     val sparkMetrics = if (isTableExisting) {
       // check scheme
-      if (!allowSchemaEvolution) validateSchema(SparkSchema(saveModeTargetDf.schema), SparkSchema(session.table(table.fullName).schema), "write")
+      if (!allowSchemaEvolution) validateSchema(SparkSchema(targetSchema), SparkSchema(session.table(table.fullName).schema), "write")
       // apply
       if (finalSaveMode == SDLSaveMode.Merge) {
         // handle schema evolution on merge because this is not yet supported in Spark <=3.5
         val existingSchema = SparkSchema(getSparkDataFrame().schema)
-        if (allowSchemaEvolution && !existingSchema.equalsSchema(SparkSchema(saveModeTargetDf.schema))) evolveTableSchema(saveModeTargetDf.schema)
+        if (allowSchemaEvolution && !existingSchema.equalsSchema(SparkSchema(targetSchema))) evolveTableSchema(targetSchema)
         // make sure SPARK_WRITE_ACCEPT_ANY_SCHEMA=false with SQL merge, because this is not supported in Spark 3.5. See also https://github.com/apache/iceberg/issues/9827.
         // TODO: This might be solved with Spark 4.0, as there will be a Spark API for merge.
         updateTableProperty(TableProperties.SPARK_WRITE_ACCEPT_ANY_SCHEMA, "false", TableProperties.SPARK_WRITE_ACCEPT_ANY_SCHEMA_DEFAULT.toString)
         // merge operations still need all columns for potential insert/updateConditions. Therefore dfPrepared instead of saveModeTargetDf is passed on.
-        mergeDataFrameByPrimaryKey(dfPrepared, saveModeOptions.map(SaveModeMergeOptions.fromSaveModeOptions).getOrElse(SaveModeMergeOptions()))
+        mergeDataFrameByPrimaryKey(df, saveModeOptions.map(SaveModeMergeOptions.fromSaveModeOptions).getOrElse(SaveModeMergeOptions()))
       } else SparkStageMetricsListener.execWithMetrics(this.id, {
         // Make sure SPARK_WRITE_ACCEPT_ANY_SCHEMA=true for schema evolution
         updateTableProperty(TableProperties.SPARK_WRITE_ACCEPT_ANY_SCHEMA, allowSchemaEvolution.toString, TableProperties.SPARK_WRITE_ACCEPT_ANY_SCHEMA_DEFAULT.toString)
         // V2 writer can be used if table is existing, it supports overwriting given partitions
-        val dfWriterV2 = saveModeTargetDf
+        val dfWriterV2 = targetDf
           .writeTo(table.fullName)
           .option(SparkWriteOptions.MERGE_SCHEMA, allowSchemaEvolution.toString)
         if (partitions.isEmpty) {

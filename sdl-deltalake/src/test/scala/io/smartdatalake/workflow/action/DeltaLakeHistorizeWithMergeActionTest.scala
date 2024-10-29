@@ -25,8 +25,8 @@ import io.smartdatalake.util.historization.Historization
 import io.smartdatalake.util.spark.DataFrameUtil.DfSDL
 import io.smartdatalake.workflow.dataframe.spark.SparkSubFeed
 import io.smartdatalake.workflow.dataobject.DeltaLakeTestUtils.deltaDb
-import io.smartdatalake.workflow.dataobject.{DeltaLakeModulePlugin, DeltaLakeTableDataObject, DeltaLakeTestUtils, HiveTableDataObject, Table}
-import io.smartdatalake.workflow.{ActionPipelineContext, ExecutionPhase}
+import io.smartdatalake.workflow.dataobject.{DeltaLakeTableDataObject, DeltaLakeTestUtils, HiveTableDataObject, Table}
+import io.smartdatalake.workflow.{ActionDAGRun, ActionPipelineContext, ExecutionPhase}
 import org.apache.spark.sql.SparkSession
 import org.scalatest.{BeforeAndAfter, FunSuite}
 
@@ -370,5 +370,56 @@ import java.time.LocalDateTime
      assert(tgtDO.getSparkDataFrame()(context2).where($"dl_hash".isNull).count() == 0)
 
 
+   }
+
+   test("historize load mergeModeEnable and copy action") {
+
+     val context: ActionPipelineContext = TestUtil.getDefaultActionPipelineContext
+
+     // setup DataObjects
+     val srcDO = MockDataObject("src1").register
+     val tgt1Table = Table(Some(deltaDb), "historize_output1", None, Some(Seq("lastname", "firstname")))
+     val tgt1DO = DeltaLakeTableDataObject("tgt1", Some(tempPath + s"/${tgt1Table.fullName}"), table = tgt1Table)
+     tgt1DO.dropTable(context)
+     instanceRegistry.register(tgt1DO)
+     val tgt2Table = Table(Some(deltaDb), "copy_output2", None, Some(Seq("lastname", "firstname")))
+     val tgt2DO = DeltaLakeTableDataObject("tgt2", Some(tempPath + s"/${tgt2Table.fullName}"), table = tgt2Table)
+     tgt2DO.dropTable(context)
+     instanceRegistry.register(tgt2DO)
+
+     // define DAG
+     val refTimestamp1 = LocalDateTime.now()
+     val context1 = TestUtil.getDefaultActionPipelineContext.copy(referenceTimestamp = Some(refTimestamp1), phase = ExecutionPhase.Exec)
+     val action1 = HistorizeAction("ha", srcDO.id, tgt1DO.id, mergeModeEnable = true)
+     instanceRegistry.register(action1)
+     val action2 = CopyAction("cb", tgt1DO.id, tgt2DO.id)
+     instanceRegistry.register(action2)
+     val dag = ActionDAGRun(Seq(action1, action2))(context1)
+
+     // start first load
+     val l1 = Seq(("doe", "john", 5)).toDF("lastname", "firstname", "rating")
+     srcDO.writeSparkDataFrame(l1, Seq())(context1)
+     dag.prepare(context1.copy(phase = ExecutionPhase.Prepare))
+     dag.init(context1.copy(phase = ExecutionPhase.Init))
+     val r1 = dag.exec(context1)
+
+     assert(!tgt1DO.getSparkDataFrame()(context1).schema.fieldNames.contains("dl_operation"))
+     assert(!r1.head.isSkipped)
+
+     // start second load -> no data
+     dag.prepare(context1.copy(phase = ExecutionPhase.Prepare))
+     dag.init(context1.copy(phase = ExecutionPhase.Init))
+     val r2 = dag.exec(context1)
+
+     assert(r2.head.isSkipped)
+
+     // start third load
+     val l2 = Seq(("papa", "john", 5)).toDF("lastname", "firstname", "rating")
+     srcDO.writeSparkDataFrame(l2, Seq())(context1)
+     dag.prepare(context1.copy(phase = ExecutionPhase.Prepare))
+     dag.init(context1.copy(phase = ExecutionPhase.Init))
+     val r3 = dag.exec(context1)
+
+     assert(!r3.head.isSkipped)
    }
  }

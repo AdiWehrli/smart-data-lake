@@ -77,12 +77,6 @@ case class SparkSubFeed(@transient override val dataFrame: Option[SparkDataFrame
   override def movePartitionColumnsLast(partitions: Seq[String]): SparkSubFeed = {
     withDataFrame(dataFrame.map(x => x.movePartitionColsLast(partitions)))
   }
-  override def clearDAGStart(): SparkSubFeed = {
-    this.copy(isDAGStart = false)
-  }
-  override def clearSkipped(): SparkSubFeed = {
-    this.copy(isSkipped = false)
-  }
   override def toOutput(dataObjectId: DataObjectId): SparkSubFeed = {
     this.copy(dataFrame = None, filter=None, isDAGStart = false, isSkipped = false, isDummy = false, dataObjectId = dataObjectId, observation = None, metrics = None)
   }
