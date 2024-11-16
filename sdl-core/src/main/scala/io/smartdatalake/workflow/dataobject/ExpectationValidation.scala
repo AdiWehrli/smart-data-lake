@@ -153,7 +153,7 @@ private[smartdatalake] trait ExpectationValidation {
     implicit val functions: DataFrameFunctions = DataFrameSubFeed.getFunctions(subFeedType)
     val expectationsToValidate = (expectations ++ additionalExpectations)
       .filter(e => !scopeJobOnly || e.scope == ExpectationScope.Job)
-    if (logger.isDebugEnabled) logger.debug(s"($id) validating $loggerContext expectations ${expectationsToValidate.map(e => s"${e.name}/${e.scope}").mkString(" ")}. Got scopeJobAndInputMetrics: ${scopeJobAndInputMetrics.map { case (k, v) => s"$k=$v" }.mkString(" ")}")
+    if (logger.isDebugEnabled()) logger.debug(s"($id) validating $loggerContext expectations ${expectationsToValidate.map(e => s"${e.name}/${e.scope}").mkString(" ")}. Got scopeJobAndInputMetrics: ${scopeJobAndInputMetrics.mapValues(_.toString).map { case (k, v) => s"$k=$v" }.mkString(" ")}")
     // collect metrics with scope = JobPartition
     val scopeJobPartitionMetrics = getScopeJobPartitionAggMetrics(subFeedType, dfJob, partitionValues, expectationsToValidate)
     // collect metrics with scope = All
