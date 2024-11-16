@@ -352,7 +352,7 @@ abstract class DataFrameActionImpl extends ActionSubFeedsImpl[DataFrameSubFeed] 
         // if this is mainOutput, enrich main input metrics
         val enrichmentFunc: Map[String,_] => Map[String,_] = if (isMainOutput) enrichMainInputMetrics else identity
         // evaluate and validate expectations
-        var (metrics,exceptions) = evDataObject.validateExpectations(subFeedType, subFeed.dataFrame, evDataObject.getDataFrame(Seq(),subFeed.tpe), subFeed.partitionValues, scopeJobExpectationMetrics ++ actionExpectationsInputMetrics, if (isMainOutput) expectations else Seq(), enrichmentFunc)
+        var (metrics, exceptions) = evDataObject.validateExpectations(subFeedType, subFeed.dataFrame, evDataObject.getDataFrame(Seq(), subFeed.tpe), subFeed.partitionValues, scopeJobExpectationMetrics ++ actionExpectationsInputMetrics, if (isMainOutput) expectations else Seq(), enrichmentFunc, loggerContext = "output")
         // evaluate and validate expectations of input DataObjects to be validated on read
         val inputExpectationsToEvaluateOnRead = inputs.filter(i => context.instanceRegistry.shouldValidateDataObjectOnRead(i.id))
           .collect{case x: DataObject with ExpectationValidation => x}
@@ -360,7 +360,7 @@ abstract class DataFrameActionImpl extends ActionSubFeedsImpl[DataFrameSubFeed] 
           val metricsSuffix = "#"+dataObject.id.id
           val inputMetrics = metrics.filter(_._1.endsWith(metricsSuffix)).map{case (k,v) => (k.stripSuffix(metricsSuffix), v)}
           if (inputMetrics.nonEmpty) {
-            val (updatedInputMetrics, inputExceptions) = dataObject.validateExpectations(subFeedType, None, dataObject.getDataFrame(Seq(), subFeed.tpe), partitionValues = Seq(), enrichmentFunc = identity, scopeJobAndInputMetrics = inputMetrics)
+            val (updatedInputMetrics, inputExceptions) = dataObject.validateExpectations(subFeedType, None, dataObject.getDataFrame(Seq(), subFeed.tpe), partitionValues = Seq(), enrichmentFunc = identity, scopeJobAndInputMetrics = inputMetrics, loggerContext = s"input ${dataObject.id}")
             metrics = metrics ++ updatedInputMetrics.map { case (k, v) => (k + metricsSuffix, v) }
             exceptions = exceptions ++ inputExceptions
           }
