@@ -95,14 +95,19 @@ private[smartdatalake] class SparkObservation(name: String = UUID.randomUUID().t
     // also extract other observations according to otherObservationsPrefix and otherObservationNames.
     metrics.getOrElse(Map())
       .filterKeys(k => k == name || otherObservationsPrefix.exists(k.startsWith) || otherObservationNames.contains(k)).toMap
-      .flatMap{case (name,r) => r.getValuesMap[Any](r.schema.fieldNames).map(e => createMetric(otherObservationsPrefix.map(name.stripPrefix).getOrElse(name).stripSuffix(pushDownTolerantMetricsMarker), e))}
+      .flatMap { case (metricName, r) =>
+        val observationName = otherObservationsPrefix.map(metricName.stripPrefix).getOrElse(metricName).stripSuffix(pushDownTolerantMetricsMarker)
+        val metricEntries = r.getValuesMap[Any](r.schema.fieldNames).map(e => createMetric(observationName, e))
+        logger.debug(s"($name) extractMetrics for $observationName got ${metricEntries.map { case (k, v) => s"$k=$v" }.mkString(" ")}")
+        metricEntries
+      }
   }
 
   private[spark] def onFinish(qe: QueryExecution): Unit = {
     synchronized {
       val observedMetrics = qe.observedMetrics
       if (metrics.isEmpty && observedMetrics.isDefinedAt(name)) {
-        logger.debug(s"got observations: ${observedMetrics.keys.mkString(", ")}")
+        logger.debug(s"($name) onFinish got observations: ${observedMetrics.keys.mkString(", ")}")
         metrics = Some(qe.observedMetrics)
         notifyAll()
         sparkSession.foreach(_.listenerManager.unregister(listener))
