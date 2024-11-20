@@ -96,9 +96,11 @@ private[smartdatalake] class SparkObservation(name: String = UUID.randomUUID().t
     metrics.getOrElse(Map())
       .filterKeys(k => k == name || otherObservationsPrefix.exists(k.startsWith) || otherObservationNames.contains(k)).toMap
       .flatMap { case (metricName, r) =>
-        val observationName = otherObservationsPrefix.map(metricName.stripPrefix).getOrElse(metricName).stripSuffix(pushDownTolerantMetricsMarker)
-        val metricEntries = r.getValuesMap[Any](r.schema.fieldNames).map(e => createMetric(observationName, e))
-        logger.debug(s"($name) extractMetrics for $observationName got ${metricEntries.map { case (k, v) => s"$k=$v" }.mkString(" ")}")
+        val namePostfix = if (metricName != name) {
+          Some(otherObservationsPrefix.map(metricName.stripPrefix).getOrElse(metricName).stripSuffix(pushDownTolerantMetricsMarker).takeWhile(_ != '#'))
+        } else None
+        val metricEntries = r.getValuesMap[Any](r.schema.fieldNames).map(e => createMetric(namePostfix, e))
+        logger.debug(s"($name) extractMetrics for $metricName got ${metricEntries.map { case (k, v) => s"$k=$v" }.mkString(" ")}")
         metricEntries
       }
   }
@@ -115,9 +117,9 @@ private[smartdatalake] class SparkObservation(name: String = UUID.randomUUID().t
     }
   }
 
-  private def createMetric(observationName: String, observation: (String,Any)) = {
+  private def createMetric(namePostfix: Option[String], observation: (String, Any)) = {
     val (k,v) = observation
-    val metricName = if (observationName==name) k else s"$k#${observationName.takeWhile(_!='#')}"
+    val metricName = namePostfix.map(p => s"$k#$p").getOrElse(k)
     (metricName, Option(v).getOrElse(None)) // if value is null convert to None
   }
 }
