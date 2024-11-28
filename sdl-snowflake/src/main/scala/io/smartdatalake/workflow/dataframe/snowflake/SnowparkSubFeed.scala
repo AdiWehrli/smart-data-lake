@@ -47,23 +47,6 @@ case class SnowparkSubFeed(@transient override val dataFrame: Option[SnowparkDat
   @transient
   override val tpe: Type = typeOf[SnowparkSubFeed]
 
-  override def clearPartitionValues(breakLineageOnChange: Boolean = true)(implicit context: ActionPipelineContext): SnowparkSubFeed = {
-    this.copy(partitionValues = Seq())
-  }
-
-  override def updatePartitionValues(partitions: Seq[String], breakLineageOnChange: Boolean = true, newPartitionValues: Option[Seq[PartitionValues]] = None)(implicit context: ActionPipelineContext): SnowparkSubFeed = {
-    val updatedPartitionValues = SubFeed.filterPartitionValues(newPartitionValues.getOrElse(partitionValues), partitions)
-    this.copy(partitionValues = updatedPartitionValues)
-  }
-
-  override def clearDAGStart(): SnowparkSubFeed = {
-    this.copy(isDAGStart = false)
-  }
-
-  override def clearSkipped(): SnowparkSubFeed = {
-    this.copy(isSkipped = false)
-  }
-
   override def toOutput(dataObjectId: DataObjectId): SnowparkSubFeed = {
     this.copy(dataFrame = None, filter = None, isDAGStart = false, isSkipped = false, isDummy = false, dataObjectId = dataObjectId, observation = None, metrics = None)
   }
@@ -90,14 +73,6 @@ case class SnowparkSubFeed(@transient override val dataFrame: Option[SnowparkDat
     resultSubfeed
   }
 
-  override def clearFilter(breakLineageOnChange: Boolean = true)(implicit context: ActionPipelineContext): SnowparkSubFeed = {
-    // if filter is removed, normally also the DataFrame must be removed so that the next action get's a fresh unfiltered DataFrame with all data of this DataObject
-    if (breakLineageOnChange && filter.isDefined) {
-      logger.info(s"($dataObjectId) breakLineage called for SubFeed from clearFilter")
-      this.copy(filter = None, observation = None).breakLineage
-    } else this.copy(filter = None, observation = None)
-  }
-
   override def persist: SnowparkSubFeed = {
     logger.warn("Persist is not implemented by Snowpark")
     // TODO: should we use "dataFrame.map(_.inner.cacheResult())"
@@ -105,12 +80,6 @@ case class SnowparkSubFeed(@transient override val dataFrame: Option[SnowparkDat
   }
 
   override def unpersist: DataFrameSubFeed = this // not implemented, see persist
-
-  override def breakLineage(implicit context: ActionPipelineContext): SnowparkSubFeed = {
-    // in order to keep the schema but truncate logical plan, a dummy DataFrame is created.
-    // dummy DataFrames must be exchanged to real DataFrames before reading in exec-phase.
-    if(dataFrame.isDefined && !isDummy && !context.simulation) convertToDummy(dataFrame.get.schema) else this
-  }
 
   override def hasReusableDataFrame: Boolean = dataFrame.isDefined && !isDummy && !isStreaming.getOrElse(false)
 
@@ -122,29 +91,13 @@ case class SnowparkSubFeed(@transient override val dataFrame: Option[SnowparkDat
     // apply input filter
     val inputFilter = if (this.dataObjectId == mainInputId) result.filter else None
     this.copy(partitionValues = result.inputPartitionValues, filter = inputFilter, isSkipped = false).breakLineage // breaklineage keeps DataFrame schema without content
+      .asInstanceOf[SnowparkSubFeed]
   }
   override def applyExecutionModeResultForOutput(result: ExecutionModeResult)(implicit context: ActionPipelineContext): SnowparkSubFeed = {
     this.copy(partitionValues = result.inputPartitionValues, filter = result.filter, isSkipped = false, dataFrame = None)
   }
   override def withDataFrame(dataFrame: Option[GenericDataFrame]): SnowparkSubFeed = this.copy(dataFrame = dataFrame.map(_.asInstanceOf[SnowparkDataFrame]))
-  override def withObservation(observation: Option[DataFrameObservation]): SnowparkSubFeed = this.copy(observation = observation)
-  override def withPartitionValues(partitionValues: Seq[PartitionValues]): DataFrameSubFeed = this.copy(partitionValues = partitionValues)
-  override def asDummy(): SnowparkSubFeed = this.copy(isDummy = true)
-  override def withFilter(partitionValues: Seq[PartitionValues], filter: Option[String]): DataFrameSubFeed = {
-    this.copy(partitionValues = partitionValues, filter = filter)
-      .applyFilter
-  }
-
   override def isStreaming: Option[Boolean] = Some(false) // no spark streaming with Snowpark
-
-  override def movePartitionColumnsLast(partitions: Seq[String]): SnowparkSubFeed = {
-    withDataFrame(dataFrame.map(x => x.movePartitionColsLast(partitions)))
-  }
-
-  override def withMetrics(metrics: MetricsMap): SnowparkSubFeed = {
-    this.copy(metrics = Some(metrics))
-  }
-  def appendMetrics(metrics: MetricsMap): SnowparkSubFeed = withMetrics(this.metrics.getOrElse(Map()) ++ metrics)
 }
 
 object SnowparkSubFeed extends DataFrameSubFeedCompanion with SmartDataLakeLogger {

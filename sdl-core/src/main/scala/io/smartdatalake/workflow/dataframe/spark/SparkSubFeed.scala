@@ -56,33 +56,6 @@ case class SparkSubFeed(@transient override val dataFrame: Option[SparkDataFrame
                        )
   extends DataFrameSubFeed {
   @transient override val tpe: Type = typeOf[SparkSubFeed]
-  override def breakLineage(implicit context: ActionPipelineContext): SparkSubFeed = {
-    // in order to keep the schema but truncate spark logical plan, a dummy DataFrame is created.
-    // dummy DataFrames must be exchanged to real DataFrames before reading in exec-phase.
-    if(dataFrame.isDefined && !isDummy && !context.simulation) convertToDummy(dataFrame.get.schema) else this
-  }
-  override def clearPartitionValues(breakLineageOnChange: Boolean = true)(implicit context: ActionPipelineContext): SparkSubFeed = {
-    if (breakLineageOnChange && partitionValues.nonEmpty) {
-      logger.info(s"($dataObjectId) breakLineage called for SubFeed from clearPartitionValues")
-      this.copy(partitionValues = Seq()).breakLineage
-    } else this.copy(partitionValues = Seq())
-  }
-  override def updatePartitionValues(partitions: Seq[String], breakLineageOnChange: Boolean = true, newPartitionValues: Option[Seq[PartitionValues]] = None)(implicit context: ActionPipelineContext): SparkSubFeed = {
-    val updatedPartitionValues = SubFeed.filterPartitionValues(newPartitionValues.getOrElse(partitionValues), partitions)
-    if (breakLineageOnChange && partitionValues != updatedPartitionValues) {
-      logger.info(s"($dataObjectId) breakLineage called for SubFeed from updatePartitionValues")
-      this.copy(partitionValues = updatedPartitionValues).breakLineage
-    } else this.copy(partitionValues = updatedPartitionValues)
-  }
-  override def movePartitionColumnsLast(partitions: Seq[String]): SparkSubFeed = {
-    withDataFrame(dataFrame.map(x => x.movePartitionColsLast(partitions)))
-  }
-  override def clearDAGStart(): SparkSubFeed = {
-    this.copy(isDAGStart = false)
-  }
-  override def clearSkipped(): SparkSubFeed = {
-    this.copy(isSkipped = false)
-  }
   override def toOutput(dataObjectId: DataObjectId): SparkSubFeed = {
     this.copy(dataFrame = None, filter=None, isDAGStart = false, isSkipped = false, isDummy = false, dataObjectId = dataObjectId, observation = None, metrics = None)
   }
@@ -107,13 +80,6 @@ case class SparkSubFeed(@transient override val dataFrame: Option[SparkDataFrame
     // return
     resultSubfeed
   }
-  override def clearFilter(breakLineageOnChange: Boolean = true)(implicit context: ActionPipelineContext): SparkSubFeed = {
-    // if filter is removed, normally also the DataFrame must be removed so that the next action get's a fresh unfiltered DataFrame with all data of this DataObject
-    if (breakLineageOnChange && filter.isDefined) {
-      logger.info(s"($dataObjectId) breakLineage called for SubFeed from clearFilter")
-      this.copy(filter = None, observation = None).breakLineage
-    } else this.copy(filter = None, observation = None)
-  }
   override def persist: SparkSubFeed = {
     this.dataFrame.foreach(_.inner.persist()) // Spark's persist & cache can be called without referencing the resulting DataFrame
     this
@@ -136,21 +102,12 @@ case class SparkSubFeed(@transient override val dataFrame: Option[SparkDataFrame
     // apply input filter
     val inputFilter = if (this.dataObjectId == mainInputId) result.filter else None
     this.copy(partitionValues = result.inputPartitionValues, filter = inputFilter, isSkipped = false).breakLineage // breaklineage keeps DataFrame schema without content
+      .asInstanceOf[SparkSubFeed]
   }
   override def applyExecutionModeResultForOutput(result: ExecutionModeResult)(implicit context: ActionPipelineContext): SparkSubFeed = {
     this.copy(partitionValues = result.inputPartitionValues, filter = result.filter, isSkipped = false, dataFrame = None)
   }
   override def withDataFrame(dataFrame: Option[GenericDataFrame]): SparkSubFeed = this.copy(dataFrame = dataFrame.map(_.asInstanceOf[SparkDataFrame]))
-  override def withObservation(observation: Option[DataFrameObservation]): SparkSubFeed = this.copy(observation = observation)
-  override def withPartitionValues(partitionValues: Seq[PartitionValues]): DataFrameSubFeed = this.copy(partitionValues = partitionValues)
-  override def asDummy(): SparkSubFeed = this.copy(isDummy = true)
-  override def withFilter(partitionValues: Seq[PartitionValues], filter: Option[String]): DataFrameSubFeed = {
-    this.copy(partitionValues = partitionValues, filter = filter)
-      .applyFilter
-  }
-  override def withMetrics(metrics: MetricsMap): SparkSubFeed = this.copy(metrics = Some(metrics))
-  override def appendMetrics(metrics: MetricsMap): SparkSubFeed = withMetrics(this.metrics.getOrElse(Map()) ++ metrics)
-
 }
 
 object SparkSubFeed extends DataFrameSubFeedCompanion {
@@ -159,7 +116,7 @@ object SparkSubFeed extends DataFrameSubFeedCompanion {
    */
   override def fromSubFeed( subFeed: SubFeed )(implicit context: ActionPipelineContext): SparkSubFeed = {
     subFeed match {
-      case sparkSubFeed: SparkSubFeed => sparkSubFeed.clearFilter() // make sure there is no filter, as filter can not be passed between actions.
+      case sparkSubFeed: SparkSubFeed => sparkSubFeed.clearFilter().asInstanceOf[SparkSubFeed] // make sure there is no filter, as filter can not be passed between actions.
       case _ => SparkSubFeed(None, subFeed.dataObjectId, subFeed.partitionValues, subFeed.isDAGStart, subFeed.isSkipped)
     }
   }

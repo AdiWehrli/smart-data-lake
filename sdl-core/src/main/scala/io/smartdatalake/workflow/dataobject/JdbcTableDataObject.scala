@@ -232,10 +232,11 @@ case class JdbcTableDataObject(override val id: DataObjectId,
 
   override def initSparkDataFrame(df: DataFrame, partitionValues: Seq[PartitionValues], saveModeOptions: Option[SaveModeOptions] = None)(implicit context: ActionPipelineContext): Unit = {
     implicit val session: SparkSession = context.sparkSession
-    validateSchemaMin(SparkSchema(df.schema), "write")
+    val genericDf = SparkDataFrame(df)
+    validateSchemaMin(genericDf.schema, "write")
     validateSchemaHasPartitionCols(df, "write")
     validateSchemaHasPrimaryKeyCols(df, table.primaryKey.getOrElse(Seq()), "write")
-    val saveModeTargetDf = saveModeOptions.map(_.convertToTargetSchema(df)).getOrElse(df)
+    val saveModeTargetDf = saveModeOptions.map(_.convertToTargetSchema(genericDf)).getOrElse(genericDf).inner
     if (isTableExisting) {
       if (allowSchemaEvolution) evolveTableSchema(saveModeTargetDf.schema)
       else validateSchemaOnWrite(saveModeTargetDf)
@@ -296,11 +297,13 @@ case class JdbcTableDataObject(override val id: DataObjectId,
                              (implicit context: ActionPipelineContext): MetricsMap = {
     implicit val session: SparkSession = context.sparkSession
     require(table.query.isEmpty, s"($id) Cannot write to jdbc DataObject defined by a query.")
-    validateSchemaMin(SparkSchema(df.schema), "write")
-    validateSchemaHasPartitionCols(df, "write")
-    validateSchemaHasPrimaryKeyCols(df, table.primaryKey.getOrElse(Seq()), "write")
-    val saveModeTargetDf = saveModeOptions.map(_.convertToTargetSchema(df)).getOrElse(df)
-    if (!allowSchemaEvolution) validateSchemaOnWrite(saveModeTargetDf)
+    val genericDf = SparkDataFrame(df)
+    val targetDf = saveModeOptions.map(_.convertToTargetSchema(genericDf)).getOrElse(genericDf).inner
+    val targetSchema = targetDf.schema
+    validateSchemaMin(SparkSchema(targetSchema), "write")
+    validateSchemaHasPartitionCols(targetDf, "write")
+    validateSchemaHasPrimaryKeyCols(targetDf, table.primaryKey.getOrElse(Seq()), "write")
+    if (!allowSchemaEvolution) validateSchemaOnWrite(targetDf)
 
     val finalSaveMode = saveModeOptions.map(_.saveMode).getOrElse(saveMode)
 

@@ -44,7 +44,7 @@ import org.apache.spark.sql.delta.DeltaLog
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
-import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.{Column, DataFrame, Row, SparkSession}
 
 import scala.util.Try
 
@@ -288,33 +288,27 @@ case class DeltaLakeTableDataObject(override val id: DataObjectId,
     }
   }
 
-  override def writeSparkDataFrame(df: DataFrame, partitionValues: Seq[PartitionValues] = Seq(), isRecursiveInput: Boolean = false, saveModeOptions: Option[SaveModeOptions] = None)
-                             (implicit context: ActionPipelineContext): MetricsMap = {
-    validateSchemaMin(SparkSchema(df.schema), "write")
-    validateSchemaHasPartitionCols(df, "write")
-    validateSchemaHasPrimaryKeyCols(df, table.primaryKey.getOrElse(Seq()), "write")
-    writeDataFrame(df, createTableOnly = false, partitionValues, saveModeOptions)
-  }
-
   /**
    * Writes DataFrame to HDFS/Parquet and creates DeltaLake table.
-   * DataFrames are repartitioned in order not to write too many small files
-   * or only a few HDFS files that are too large.
    */
-  def writeDataFrame(df: DataFrame, createTableOnly: Boolean, partitionValues: Seq[PartitionValues], saveModeOptions: Option[SaveModeOptions])
-                    (implicit context: ActionPipelineContext): MetricsMap = {
+  override def writeSparkDataFrame(df: DataFrame, partitionValues: Seq[PartitionValues] = Seq(), isRecursiveInput: Boolean = false, saveModeOptions: Option[SaveModeOptions] = None)
+                             (implicit context: ActionPipelineContext): MetricsMap = {
     implicit val session: SparkSession = context.sparkSession
     implicit val helper: SparkSubFeed.type = SparkSubFeed
-    val dfPrepared = if (createTableOnly) {
-      // create empty df with existing df's schema
-      DataFrameUtil.getEmptyDataFrame(df.schema)
-    } else df
+
+    val genericDf = SparkDataFrame(df)
+    val targetDf = saveModeOptions.map(_.convertToTargetSchema(genericDf)).getOrElse(genericDf).inner
+    val targetSchema = targetDf.schema
+
+    validateSchemaMin(SparkSchema(targetSchema), "write")
+    validateSchemaHasPartitionCols(targetDf, "write")
+    validateSchemaHasPrimaryKeyCols(targetDf, table.primaryKey.getOrElse(Seq()), "write")
 
     val finalSaveMode = saveModeOptions.map(_.saveMode).getOrElse(saveMode)
-    val saveModeTargetDf = saveModeOptions.map(_.convertToTargetSchema(dfPrepared)).getOrElse(dfPrepared)
+
     val userMetadata = s"${context.application} runId=${context.executionId.runId} attemptId=${context.executionId.attemptId}"
     session.conf.set("spark.databricks.delta.commitInfo.userMetadata", userMetadata)
-    val dfWriter = saveModeTargetDf.write
+    val dfWriter = targetDf.write
       .format("delta")
       .options(options)
       .conditionalOption("path", path.isDefined, () => hadoopPath.toString) // evaluate hadoopPath only for external tables
@@ -322,10 +316,10 @@ case class DeltaLakeTableDataObject(override val id: DataObjectId,
       .option("mergeSchema", allowSchemaEvolution) // allow schema evolution for SaveMode.Append
 
     val sparkMetrics = if (isTableExisting) {
-      if (!allowSchemaEvolution) validateSchema(SparkSchema(saveModeTargetDf.schema), SparkSchema(session.table(table.fullName).schema), "write")
+      if (!allowSchemaEvolution) validateSchema(SparkSchema(targetDf.schema), SparkSchema(session.table(table.fullName).schema), "write")
       if (finalSaveMode == SDLSaveMode.Merge) {
         // merge operations still need all columns for potential insert/updateConditions. Therefore dfPrepared instead of saveModeTargetDf is passed on.
-        mergeDataFrameByPrimaryKey(dfPrepared, saveModeOptions.map(SaveModeMergeOptions.fromSaveModeOptions).getOrElse(SaveModeMergeOptions()))
+        mergeDataFrameByPrimaryKey(df, saveModeOptions.map(SaveModeMergeOptions.fromSaveModeOptions).getOrElse(SaveModeMergeOptions()))
       } else SparkStageMetricsListener.execWithMetrics(this.id, {
         if (partitions.isEmpty) {
           // overwrite all
@@ -561,22 +555,45 @@ case class DeltaLakeTableDataObject(override val id: DataObjectId,
       val deltaLog = DeltaLog.forTable(session, table.tableIdentifier)
       val snapshot = deltaLog.unsafeVolatileSnapshot
       val columns = snapshot.schema.fieldNames
-      def getAgg(col: String) = struct(
-        min($"stats.minValues"(col)).as("minValue"),
-        max($"stats.maxValues"(col)).as("maxValue"),
-        sum($"stats.nullCount"(col)).as("nullCount")
+
+      def colExists(schema: StructType, nestedCol: Seq[String]): Boolean = {
+        nestedCol match {
+          case c :: Nil => schema.fieldNames.contains(c)
+          case c :: tail => schema.find(_.name == c)
+            .map(_.dataType).collect { case dataType: StructType => colExists(dataType, tail) }
+            .getOrElse(false)
+        }
+      }
+
+      def statsColIfExists(statsCol: String, dataCol: String): Option[Column] = {
+        val exists = colExists(snapshot.statsSchema, Seq(statsCol, dataCol))
+        if (exists) Some($"stats"(statsCol)(dataCol))
+        else None
+      }
+
+      def getAgg(col: String): Column = struct(
+        Seq(
+          statsColIfExists("minValues", col).map(min(_).as("minValue")),
+          statsColIfExists("maxValues", col).map(max(_).as("maxValue")),
+          statsColIfExists("nullCount", col).map(sum(_).as("nullCount"))
+        ).flatten: _*
       ).as(col)
       val metricsRow = snapshot.allFiles
         .select(from_json($"stats", snapshot.statsSchema).as("stats"))
         .agg(sum($"stats.numRecords").as("numRecords"), columns.map(getAgg):_*).head()
+
+      def getAsOption[T](row: Row, col: String): Option[T] = {
+        if (row.schema.fieldNames.contains(col) && !row.isNullAt(row.fieldIndex(col))) Some(row.getAs[T](col))
+        else None
+      }
       columns.map {
         c =>
           val struct = metricsRow.getStruct(metricsRow.fieldIndex(c))
-          c -> Map(
-            ColumnStatsType.NullCount.toString -> struct.getAs[Long]("nullCount"),
-            ColumnStatsType.Min.toString -> struct.getAs[Any]("minValue"),
-            ColumnStatsType.Max.toString -> struct.getAs[Any]("maxValue")
-          )
+          c -> Seq(
+            getAsOption[Long](struct, "nullCount").map(ColumnStatsType.NullCount.toString -> _),
+            getAsOption[Any](struct, "minValue").map(ColumnStatsType.Min.toString -> _),
+            getAsOption[Any](struct, "maxValue").map(ColumnStatsType.Max.toString -> _)
+          ).flatten.toMap
       }.toMap
     } catch {
       case e: Exception =>
